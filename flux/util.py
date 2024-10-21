@@ -24,15 +24,23 @@ class ModelSpec:
     ae_url: str | None
 
 T5_URL = "https://weights.replicate.delivery/default/official-models/flux/t5/t5-v1_1-xxl.tar"
-T5_CACHE = "./model-cache/t5"
+# T5_CACHE = "./model-cache/t5"
+T5_CACHE = "/volume/raw/t5"
+
 CLIP_URL = "https://weights.replicate.delivery/default/official-models/flux/clip/clip-vit-large-patch14.tar"
-CLIP_CACHE = "./model-cache/clip"
-SCHNELL_CACHE = "./model-cache/schnell/schnell.sft"
+# CLIP_CACHE = "./model-cache/clip"
+CLIP_CACHE = "/volume/raw/clip"
+
 SCHNELL_URL = "https://weights.replicate.delivery/default/official-models/flux/schnell/schnell.sft"
-DEV_CACHE = "./model-cache/dev/dev.sft"
+SCHNELL_CACHE = "./model-cache/schnell/schnell.sft"
+
 DEV_URL = "https://weights.replicate.delivery/default/official-models/flux/dev/dev.sft"
-AE_CACHE = "./model-cache/ae/ae.sft"
+# DEV_CACHE = "./model-cache/dev/dev.sft"
+DEV_CACHE = "/volume/raw/flux_dev.safetensors"
+
 AE_URL = "https://weights.replicate.delivery/default/official-models/flux/ae/ae.sft"
+# AE_CACHE = "./model-cache/ae/ae.sft"
+AE_CACHE = "/volume/raw/ae.safetensors"
 
 configs = {
     "flux-dev": ModelSpec(
@@ -117,8 +125,9 @@ def load_flow_model(name: str, device: str | torch.device = "cuda", quantize: bo
     ckpt_path = configs[name].ckpt_path
     ckpt_url = configs[name].ckpt_url
 
-    if not os.path.exists(ckpt_path):
-        download_weights(ckpt_url, ckpt_path)
+    print(ckpt_path, " exists", os.path.exists(ckpt_path))
+    # if not os.path.exists(ckpt_path):
+        # download_weights(ckpt_url, ckpt_path)
 
     with torch.device("meta" if ckpt_path is not None else device):
         model = Flux(configs[name].params).to(torch.bfloat16)
@@ -141,15 +150,16 @@ def load_flow_model(name: str, device: str | torch.device = "cuda", quantize: bo
 
 def load_t5(device: str | torch.device = "cuda", max_length: int = 512) -> HFEmbedder:
     # max length 64, 128, 256 and 512 should work (if your sequence is short enough)
-    if not os.path.exists(T5_CACHE):
-        download_weights(T5_URL, T5_CACHE)
+    print(T5_CACHE, " exists", os.path.exists(T5_CACHE))
+    # if not os.path.exists(T5_CACHE):
+        # download_weights(T5_URL, T5_CACHE)
     device = torch.device(device)
     return HFEmbedder(T5_CACHE, max_length=max_length, torch_dtype=torch.bfloat16).to(device)
 
 
 def load_clip(device: str | torch.device = "cuda") -> HFEmbedder:
-    if not os.path.exists(CLIP_CACHE):
-        download_weights(CLIP_URL, CLIP_CACHE)
+    # if not os.path.exists(CLIP_CACHE):
+        # download_weights(CLIP_URL, CLIP_CACHE)
     device = torch.device(device)
     return HFEmbedder(CLIP_CACHE, max_length=77, is_clip=True, torch_dtype=torch.bfloat16).to(device)
 
@@ -162,8 +172,9 @@ def load_ae(name: str, device: str | torch.device = "cuda") -> AutoEncoder:
 
     ae_path = configs[name].ae_path
     ae_url = configs[name].ae_url
-    if not os.path.exists(ae_path):
-        download_weights(ae_url, ae_path)
+    print(ae_path, " exists", os.path.exists(ae_path))
+    # if not os.path.exists(ae_path):
+    #     download_weights(ae_url, ae_path)
 
     if configs[name].ae_path is not None:
         sd = load_sft(configs[name].ae_path, device=str(device))

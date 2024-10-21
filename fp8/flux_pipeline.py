@@ -157,6 +157,9 @@ class FluxPipeline:
 
         """
         self.model = lora_loading.apply_lora_to_model(self.model, lora_path, scale)
+        
+    def load_lokr(self, lora_path: str, scale: float):
+        self.model = lora_loading.apply_lokr_to_model(self.model, lora_path, scale)
 
     @torch.inference_mode()
     def compile(self):

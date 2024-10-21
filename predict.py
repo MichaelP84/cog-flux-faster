@@ -172,7 +172,7 @@ class Predictor(BasePredictor):
 
         if not self.disable_fp8:
             self.fp8_pipe = FluxPipeline.load_pipeline_from_config_path(
-                f"fp8/configs/config-1-{flow_model_name}-h100.json",
+                f"fp8/configs/config-1-{flow_model_name}-L40.json",
                 shared_models=shared_models,
             )
 

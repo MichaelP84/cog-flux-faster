@@ -9,6 +9,7 @@ except Exception as e:
     CublasLinear = type(None)
 from fp8.float8_quantize import F8Linear
 from fp8.modules.flux_model import Flux
+# from diffusers.models.transformers.transformer_flux import FluxTransformer2DModel
 
 
 def swap_scale_shift(weight):
@@ -384,6 +385,25 @@ def apply_lora_weight_to_module(
     fused_weight = w_orig + fused_lora
     return fused_weight.to(dtype=w_dtype, device=device)
 
+@torch.inference_mode()
+def apply_lokr_weight_to_module(
+    module_weight: torch.Tensor,
+    lokr_weight: torch.Tensor,
+):
+    w_dtype = module_weight.dtype
+    dtype = torch.float32
+    device = module_weight.device
+    w_orig = module_weight.to(dtype=dtype, device=device)
+    lokr_weight = lokr_weight.to(dtype=dtype, device=device)
+    
+    if (w_orig.shape != lokr_weight.shape):
+        print(f"Error: original vector shape {w_orig.shape} != lokr vector shape {lokr_weight.shape}")
+    # else:
+        # print(f"{w_orig.shape} == {lokr_weight.shape}")
+   
+    fused_weight = w_orig + lokr_weight
+    return fused_weight.to(dtype=w_dtype, device=device)
+
 
 @torch.inference_mode()
 def apply_lora_to_model(model: Flux, lora_path: str, lora_scale: float = 1.0) -> Flux:
@@ -439,3 +459,123 @@ def apply_lora_to_model(model: Flux, lora_path: str, lora_scale: float = 1.0) ->
             module.weight.data = weight_f16.type(dtype)
     logger.success("Lora applied")
     return model
+
+def apply_lokr_to_model(model: Flux, lokr_path: str, lora_scale: float = 1.0) -> Flux:
+
+    # has_guidance = model.params.guidance_embed
+    has_guidance = False
+    logger.info(f"Loading LoKR weights from {lokr_path}")
+    
+    # Load the LoKR weights from file (assumed to be in safetensors format)
+    try:
+        lokr_weights = load_file(lokr_path)        
+        logger.info("loaded safetensors, doing converstion")
+        
+        model_state_dict = model.state_dict()
+        new_state_dict = lokr_convert_diffusers_to_flux_transformer_checkpoint(lokr_weights)
+        
+        keys_raw = [
+            key.replace(".weight", "")
+            for key in new_state_dict.keys()
+        ]
+        logger.debug("Keys extracted", len(keys_raw))
+        keys_raw = list(set(keys_raw))
+        
+        for key in tqdm(keys_raw, desc="Applying LOKR", total=len(keys_raw)):
+            module = get_module_for_key(key, model)
+            dtype = model.dtype
+            weight_is_f8 = False
+            if isinstance(module, F8Linear):
+                weight_is_f8 = True
+                weight_f16 = (
+                    module.float8_data.clone()
+                    .detach()
+                    .float()
+                    .mul(module.scale_reciprocal)
+                    .to(module.weight.device)
+                )
+            elif isinstance(module, torch.nn.Linear):
+                weight_f16 = module.weight.clone().detach().float()
+            elif isinstance(module, CublasLinear):
+                weight_f16 = module.weight.clone().detach().float()
+                
+            lokr_sd = new_state_dict[f"{key}.weight"]
+            
+            weight_f16 = apply_lokr_weight_to_module(
+                weight_f16, lokr_sd,
+            )
+            
+            if weight_is_f8:
+                module.set_weight_tensor(weight_f16.type(dtype))
+            else:
+                module.weight.data = weight_f16.type(dtype)
+
+        # Load the updated state dict back into the model
+        # model.load_state_dict(model_state_dict)
+        
+        logger.info("LoKR weights loaded")
+        
+        return model
+                
+    except Exception as e:
+        print(f"Failed to load LoKR weights: {e}")
+    
+def calculate_KR_product(diffusers_state_dict, tag):
+    w1 = diffusers_state_dict.pop(f"{tag}.lokr_w1")
+    w2 = diffusers_state_dict.pop(f"{tag}.lokr_w2")
+    alpha = diffusers_state_dict.pop(f"{tag}.alpha")
+    # print("alpha", alpha.shape, alpha)
+    return 1 * torch.kron(w1, w2)
+    
+def lokr_convert_diffusers_to_flux_transformer_checkpoint(diffusers_state_dict, **kwargs):
+    flux_checkpoint = {}
+    
+    # Helper function to reverse the scale-shift swap
+    def reverse_swap_scale_shift(weight):
+        scale, shift = weight.chunk(2, dim=0)
+        return torch.cat([shift, scale], dim=0)
+
+    # Double transformer blocks
+    layers = [int(k.split('_')[3]) for k in diffusers_state_dict if k.startswith("lycoris_transformer_blocks_")]
+    # logger.info(f"layers{layers}")
+    num_layers = max(layers) + 1
+    for i in tqdm(range(num_layers), desc="Double Blocks"):
+        # block_prefix = f"transformer_blocks.{i}."
+        block_prefix = f"lycoris_transformer_blocks_{i}_"
+        
+        sample_q = calculate_KR_product(diffusers_state_dict, f"{block_prefix}attn_to_q")
+        sample_k = calculate_KR_product(diffusers_state_dict, f"{block_prefix}attn_to_k")
+        sample_v = calculate_KR_product(diffusers_state_dict, f"{block_prefix}attn_to_v")
+        context_q = calculate_KR_product(diffusers_state_dict, f"{block_prefix}attn_add_q_proj")
+        context_k = calculate_KR_product(diffusers_state_dict, f"{block_prefix}attn_add_k_proj")
+        context_v = calculate_KR_product(diffusers_state_dict, f"{block_prefix}attn_add_v_proj")
+
+        flux_checkpoint[f"double_blocks.{i}.img_attn.qkv.weight"] = torch.cat([sample_q, sample_k, sample_v], dim=0)
+        flux_checkpoint[f"double_blocks.{i}.txt_attn.qkv.weight"] = torch.cat([context_q, context_k, context_v], dim=0)
+
+        flux_checkpoint[f"double_blocks.{i}.img_mlp.0.weight"] = calculate_KR_product(diffusers_state_dict, f"{block_prefix}ff_net_0_proj")
+        flux_checkpoint[f"double_blocks.{i}.img_mlp.2.weight"] = calculate_KR_product(diffusers_state_dict, f"{block_prefix}ff_net_2")
+        flux_checkpoint[f"double_blocks.{i}.txt_mlp.0.weight"] = calculate_KR_product(diffusers_state_dict, f"{block_prefix}ff_context_net_0_proj")
+        flux_checkpoint[f"double_blocks.{i}.txt_mlp.2.weight"] = calculate_KR_product(diffusers_state_dict, f"{block_prefix}ff_context_net_2")
+ 
+        flux_checkpoint[f"double_blocks.{i}.img_attn.proj.weight"] = calculate_KR_product(diffusers_state_dict, f"{block_prefix}attn_to_out_0")
+        flux_checkpoint[f"double_blocks.{i}.txt_attn.proj.weight"] = calculate_KR_product(diffusers_state_dict, f"{block_prefix}attn_to_add_out")
+
+    # Single transformer blocks
+    single_layers = [int(k.split('_')[4]) for k in diffusers_state_dict if k.startswith("lycoris_single_transformer_blocks_")]
+    num_single_layers = max(single_layers) + 1
+    for i in tqdm(range(num_single_layers), desc="Single Blocks"):
+        block_prefix = f"lycoris_single_transformer_blocks_{i}_"
+        
+        q = calculate_KR_product(diffusers_state_dict, f"{block_prefix}attn_to_q")
+        k = calculate_KR_product(diffusers_state_dict, f"{block_prefix}attn_to_k")
+        v = calculate_KR_product(diffusers_state_dict, f"{block_prefix}attn_to_v")
+        # Create a tensor of zeros with shape [12288, 3072]
+        mlp_zeros = torch.zeros(12288, 3072)
+        flux_checkpoint[f"single_blocks.{i}.linear1.weight"] = torch.cat([q, k, v, mlp_zeros], dim=0)
+        
+    print("looking at keys ...")
+    for key in diffusers_state_dict.keys():
+        print(key)
+
+    return flux_checkpoint

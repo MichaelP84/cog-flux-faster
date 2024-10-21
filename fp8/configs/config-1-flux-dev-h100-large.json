@@ -39,11 +39,11 @@
   "ae_dtype": "bfloat16",
   "text_enc_dtype": "bfloat16",
   "flow_quantization_dtype": "qfloat8",
-  "text_enc_quantization_dtype": "qint4",
-  "ae_quantization_dtype": "qfloat8",
+  "text_enc_quantization_dtype": "qfloat8",
+  "compile_whole_model": true,
   "compile_extras": true,
   "compile_blocks": true,
-  "offload_text_encoder": true,
-  "offload_vae": true,
+  "offload_text_encoder": false,
+  "offload_vae": false,
   "offload_flow": false
 }

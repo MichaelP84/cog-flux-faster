@@ -486,4 +486,9 @@ def quantize_flow_transformer_and_dispatch_float8(
     if offload_flow:
         flow_model.to("cpu")
         torch.cuda.empty_cache()
+        
+    # Move the model back to the original device if it wasn't offloaded
+    if not offload_flow:
+        flow_model = flow_model.to(device)
+            
     return flow_model
